@@ -14,7 +14,9 @@ struct MarkdownBlock: Identifiable {
     enum Kind {
         case paragraph(MarkdownInline), unordered([MarkdownInline])
         case ordered([(number: Int, content: MarkdownInline)]), task(isDone: Bool, content: MarkdownInline)
-        case quote(MarkdownInline), code(String), divider
+        // 围栏代码块：language 是 cmark 的原始 info string（可能是 `swift title="x"`，
+        // 也可能带 `js,linenos`），刻意不在这里切分——解析归 LanguageRegistry 管。
+        case quote(MarkdownInline), code(text: String, language: String?), divider
         // GFM 表格：表头 + 每列对齐方式 + 数据行。
         case table(header: [MarkdownInline], alignments: [TableAlignment], rows: [[MarkdownInline]])
     }
@@ -177,7 +179,7 @@ private struct MarkdownBlockCollector {
         case let quote as BlockQuote:
             appendBlock(.quote(flattenedInline(quote.blockChildren)))
         case let code as CodeBlock:
-            appendBlock(.code(trimmedCodeLiteral(code.code)))
+            appendBlock(.code(text: trimmedCodeLiteral(code.code), language: code.language))
         case is ThematicBreak:
             appendBlock(.divider)
         case let table as Table:

@@ -4,6 +4,7 @@
 //
 
 import AppKit
+import DanboSwiftHighlight
 import Foundation
 import Markdown
 
@@ -96,11 +97,18 @@ enum MarkdownAttributedBuilder {
     /// 由 build 在每次构建前写入；全部在主线程读写，与渲染管线同一线程约定。
     private static var currentSource: MarkdownSource?
 
+    /// 本次构建所用的高亮配色。同为构建期输入，由 build 在每次构建前写入。
+    private static var currentTheme: HighlightTheme?
+
     private static let newline = NSAttributedString(string: "\n")
 
-    static func build(markdown: String, collapsedSections: Set<String>, highlightText: String?, taskLinksEnabled: Bool = false) -> NSAttributedString {
+    /// - Parameter theme: 围栏代码块的配色。nil 时回落到
+    ///   `DanboMarkdownConfiguration.highlightTheme`（两者都为空即不着色）。
+    ///   这里是每次构建读一次，不做缓存——宿主可能中途换配色。
+    static func build(markdown: String, collapsedSections: Set<String>, highlightText: String?, taskLinksEnabled: Bool = false, theme: HighlightTheme? = nil) -> NSAttributedString {
         self.taskLinksEnabled = taskLinksEnabled
         self.currentSource = MarkdownSource(markdown)
+        self.currentTheme = theme ?? DanboMarkdownConfiguration.highlightTheme
         let root = MarkdownSectionParser.parse(markdown)
         let result = NSMutableAttributedString()
 
@@ -237,21 +245,8 @@ enum MarkdownAttributedBuilder {
             result.append(newline)
             tightenInnerLineSpacing(in: result, within: NSRange(location: start, length: result.length - start))
 
-        case let .code(text):
-            let attributed = NSMutableAttributedString(
-                string: text,
-                attributes: [
-                    .font: NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular),
-                    .foregroundColor: primaryColor,
-                    .paragraphStyle: codeParagraphStyle(indent: indent)
-                ]
-            )
-            attributed.addAttribute(codeBlockBackgroundAttributeKey, value: true, range: NSRange(location: 0, length: attributed.length))
-            // 块内行距/段距为 0（紧凑），块与上下文之间的间距只在首/末行补回。
-            setCodeBlockFirstLineSpacing(in: attributed)
-            setTrailingParagraphSpacing(20, in: attributed, within: NSRange(location: 0, length: attributed.length))
-            result.append(attributed)
-            result.append(newline)
+        case let .code(text, language):
+            appendCodeBlock(text: text, language: language, indent: indent, to: result)
 
         case let .table(header, alignments, rows):
             appendTable(header: header, alignments: alignments, rows: rows, to: result, indent: indent)
@@ -272,6 +267,42 @@ enum MarkdownAttributedBuilder {
         if followedByDivider {
             zeroTrailingParagraphSpacing(in: result, within: NSRange(location: start, length: result.length - start))
         }
+    }
+
+    /// 围栏代码块。没配主题时输出与加高亮之前逐位相同。
+    ///
+    /// token 只叠加 `.foregroundColor`：字体一变，字宽→折行→测高就跟着变，
+    /// 而代码块与相邻段落的间距、以及「没有行重叠」都是既有测试钉死的。
+    private static func appendCodeBlock(text: String, language: String?, indent: CGFloat, to result: NSMutableAttributedString) {
+        // 基线色必须与卡片底色同源：主题生效时用配色的 base05，不用 primaryColor
+        // （labelColor 跟随的是*外观*）。否则「深色配色 + 浅色外观」下卡片底是深色、
+        // 文字是 labelColor 解析出的黑色——黑字黑底，而这组合在固定外观的测试里测不到。
+        // 卡片底色由 MarkdownTextView 按主题自绘，这里只标记范围。
+        let theme = currentTheme
+        let attributed = NSMutableAttributedString(
+            string: text,
+            attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular),
+                .foregroundColor: theme?.defaultForeground ?? primaryColor,
+                .paragraphStyle: codeParagraphStyle(indent: indent)
+            ]
+        )
+        if let theme {
+            let blockRange = NSRange(location: 0, length: attributed.length)
+            for span in SyntaxHighlighter.highlight(text, languageName: language) {
+                // 钳位而不是直接套用：越界的 range 会让 addAttribute 抛 NSRangeException
+                // 直接崩掉渲染。扫描器保证不越界，这里是调用方自己的防线。
+                let range = NSIntersectionRange(span.range, blockRange)
+                guard range.length > 0 else { continue }
+                attributed.addAttribute(.foregroundColor, value: theme.color(for: span.token), range: range)
+            }
+        }
+        attributed.addAttribute(codeBlockBackgroundAttributeKey, value: true, range: NSRange(location: 0, length: attributed.length))
+        // 块内行距/段距为 0（紧凑），块与上下文之间的间距只在首/末行补回。
+        setCodeBlockFirstLineSpacing(in: attributed)
+        setTrailingParagraphSpacing(20, in: attributed, within: NSRange(location: 0, length: attributed.length))
+        result.append(attributed)
+        result.append(newline)
     }
 
     /// 将给定范围内「最后一个段落」的段后间距设为指定值（不影响块内其它行/段落的间距）。

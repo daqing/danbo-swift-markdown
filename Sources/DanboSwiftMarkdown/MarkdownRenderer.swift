@@ -5,6 +5,7 @@
 
 import SwiftUI
 import AppKit
+import DanboSwiftHighlight
 
 /// A native Markdown renderer that keeps Markdown semantics (links, emphasis,
 /// strikethrough and inline code) while adding layout for common block types.
@@ -36,6 +37,10 @@ public struct MarkdownRenderer: View {
     /// 跳过零宽渲染，由 sizeThatFits 按真实宽度排期唯一一次渲染（独立笔记窗口用）。
     public var skipRenderUntilSized: Bool = false
 
+    /// 围栏代码块的高亮配色。nil 时用 `DanboMarkdownConfiguration.highlightTheme`
+    /// （两者都为空即不着色）。配色只改颜色、不改字体，所以不影响测高。
+    public var highlightTheme: HighlightTheme? = nil
+
     /// 文本实际排版高度，由 MarkdownTextView 布局后写回。用显式 frame 钉住行高：
     /// SwiftUI 对 NSViewRepresentable 的 sizeThatFits 结果可能不再重询（首屏批量
     /// 插入、滚动条出现收窄内容宽度等时序下，文本按更窄宽度重新折行变高），
@@ -52,7 +57,8 @@ public struct MarkdownRenderer: View {
         onToggleTask: ((Int) -> Void)? = nil,
         onMeasuredHeight: ((CGFloat) -> Void)? = nil,
         initialMeasuredHeight: CGFloat? = nil,
-        skipRenderUntilSized: Bool = false
+        skipRenderUntilSized: Bool = false,
+        highlightTheme: HighlightTheme? = nil
     ) {
         self.markdown = markdown
         self.highlightText = highlightText
@@ -62,6 +68,7 @@ public struct MarkdownRenderer: View {
         self.onMeasuredHeight = onMeasuredHeight
         self._measuredHeight = State(initialValue: initialMeasuredHeight)
         self.skipRenderUntilSized = skipRenderUntilSized
+        self.highlightTheme = highlightTheme
     }
 
     public var body: some View {
@@ -73,7 +80,8 @@ public struct MarkdownRenderer: View {
             onDoubleClick: onDoubleClick,
             onToggleTask: onToggleTask,
             measuredHeight: $measuredHeight,
-            skipRenderUntilSized: skipRenderUntilSized
+            skipRenderUntilSized: skipRenderUntilSized,
+            highlightTheme: highlightTheme
         )
         .frame(maxWidth: .infinity, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
@@ -117,6 +125,8 @@ struct MarkdownTextRepresentable: NSViewRepresentable {
     @Binding var measuredHeight: CGFloat?
     /// 延迟首次渲染直到有真实宽度，见 MarkdownRenderer.skipRenderUntilSized。
     let skipRenderUntilSized: Bool
+    /// 代码块配色，nil 时用全局配置，见 MarkdownRenderer.highlightTheme。
+    let highlightTheme: HighlightTheme?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(onToggle: onToggle, onToggleTask: onToggleTask)
@@ -179,18 +189,25 @@ struct MarkdownTextRepresentable: NSViewRepresentable {
         render(textView, contentWidth: contentWidth, coordinator: context.coordinator)
     }
 
-    /// 输入指纹（内容/折叠/高亮/宽度）任一变化才重建文本。
+    /// 构建并写入文本。输入指纹（内容/折叠/高亮/宽度/配色）任一变化才重建。
     /// 不能依赖文本相等性做门控：文本系统会在布局期间复制/重建附件，
     /// 复制后的存储与重新构建的结果可能永远「不相等」，若每次 updateNSView 都重设
     /// textStorage，会陷入 重建→布局失效→再重建 的死循环（卡死随后崩溃）。
-    private func render(_ textView: MarkdownTextView, contentWidth: CGFloat, coordinator: Coordinator) {
+    ///
+    /// 不是 private：测试直接调用它验证指纹与配色（SwiftUI 的 `Context` 无法在
+    /// 测试里构造，走不到 updateNSView）。
+    func render(_ textView: MarkdownTextView, contentWidth: CGFloat, coordinator: Coordinator) {
+        // 每次重建时解析一次（不缓存）：换配色族不会改笔记内容，指纹不带它就永远不重建，
+        // 属性里存着的还是旧主题那批颜色实例。
+        let theme = highlightTheme ?? DanboMarkdownConfiguration.highlightTheme
         let key = Coordinator.RenderKey(
             markdown: markdown,
             collapsedSections: collapsedSections,
             highlightText: highlightText,
             contentWidth: contentWidth,
             // 任务行链接是否生成是构建期输入：同一内容从只读变成可点时必须重建。
-            tasksClickable: onToggleTask != nil
+            tasksClickable: onToggleTask != nil,
+            themeID: theme?.id
         )
         guard coordinator.lastRenderKey != key else {
             return
@@ -203,9 +220,13 @@ struct MarkdownTextRepresentable: NSViewRepresentable {
             markdown: markdown,
             collapsedSections: collapsedSections,
             highlightText: highlightText,
-            taskLinksEnabled: onToggleTask != nil
+            taskLinksEnabled: onToggleTask != nil,
+            theme: theme
         )
         textView.textStorage?.setAttributedString(attributed)
+        // 卡片底色是自绘的，得让视图自己知道用哪套配色。按 view 存值，不新增全局静态量：
+        // availableContentWidth 跨实例串味的教训在那儿（同一进程里多个渲染实例共存）。
+        textView.highlightTheme = theme
         textView.invalidateIntrinsicContentSize()
         // 纯文本替换不会改变视图 frame，layout() 不会自动触发，高度回写（钉住
         // measuredHeight 的唯一通道）也就不再执行，行高会永远钉在旧值上——内容
@@ -272,6 +293,8 @@ struct MarkdownTextRepresentable: NSViewRepresentable {
             let highlightText: String?
             let contentWidth: CGFloat
             let tasksClickable: Bool
+            /// 代码块配色标识：换配色族时内容没变，但它变了，必须重建。
+            let themeID: String?
         }
         var lastRenderKey: RenderKey?
 
@@ -316,6 +339,18 @@ struct MarkdownTextRepresentable: NSViewRepresentable {
 }
 
 final class MarkdownTextView: NSTextView {
+    /// 代码块卡片底色用的配色，由渲染时写入。nil 时用默认底色。
+    ///
+    /// 存在视图上而不是读全局：底色是在 drawBackground 里取的，那时拿不到本次构建
+    /// 用的那套配色；而全局量在同进程多个渲染实例（笔记窗口 + 右侧详情面板）之间
+    /// 是共用的，谁最后写谁说了算。
+    var highlightTheme: HighlightTheme?
+
+    /// 代码块卡片的实际底色。主题的底色与代码正文色同源（base00 / base05）：
+    /// 只有底色跟着主题走、文字还是 labelColor（跟随外观）时，
+    /// 「深色配色 + 浅色外观」就是黑字黑底。
+    var codeBlockCardFill: NSColor { highlightTheme?.cardFill ?? codeBlockBackgroundFill }
+
     override var intrinsicContentSize: NSSize {
         guard let layoutManager = layoutManager, let textContainer = textContainer else {
             return super.intrinsicContentSize
@@ -399,9 +434,10 @@ final class MarkdownTextView: NSTextView {
 
     override func drawBackground(in rect: NSRect) {
         super.drawBackground(in: rect)
+        let cardFill = codeBlockCardFill
         for block in codeBlockFrames() {
             let path = NSBezierPath(roundedRect: block.frame, xRadius: codeBlockCornerRadius, yRadius: codeBlockCornerRadius)
-            codeBlockBackgroundFill.setFill()
+            cardFill.setFill()
             path.fill()
         }
         drawTableGrid()
