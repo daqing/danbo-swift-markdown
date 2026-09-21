@@ -23,7 +23,8 @@ public struct MarkdownRenderer: View {
     public var highlightText: String? = nil
     public var collapseRequest: MarkdownCollapseRequest? = nil
     public var onDoubleClick: (() -> Void)? = nil
-    /// 任务 checkbox 点击回调（参数为源 Markdown 行号）；nil 时任务标记渲染为纯文本。
+    /// 任务行点击回调（参数为源 Markdown 行号）：点击 checkbox 或该行文字都触发；
+    /// nil 时任务行渲染为纯文本。
     public var onToggleTask: ((Int) -> Void)? = nil
     /// 正文排版高度回写（全文高度，与展示层裁剪无关）；nil 表示不关心。
     public var onMeasuredHeight: ((CGFloat) -> Void)? = nil
@@ -110,7 +111,7 @@ struct MarkdownTextRepresentable: NSViewRepresentable {
     let highlightText: String?
     let onToggle: (String) -> Void
     let onDoubleClick: (() -> Void)?
-    /// 任务 checkbox 点击回调（参数为源 Markdown 行号）；nil 时任务标记渲染为纯文本。
+    /// 任务行点击回调（参数为源 Markdown 行号）；nil 时任务行渲染为纯文本。
     let onToggleTask: ((Int) -> Void)?
     /// 文本实际排版高度的回写通道，见 MarkdownRenderer.measuredHeight。
     @Binding var measuredHeight: CGFloat?
@@ -118,7 +119,7 @@ struct MarkdownTextRepresentable: NSViewRepresentable {
     let skipRenderUntilSized: Bool
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onToggle: onToggle)
+        Coordinator(onToggle: onToggle, onToggleTask: onToggleTask)
     }
 
     func makeNSView(context: Context) -> MarkdownTextView {
@@ -138,16 +139,17 @@ struct MarkdownTextRepresentable: NSViewRepresentable {
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.delegate = context.coordinator
         textView.onToggleCollapse = onToggle
-        textView.onDoubleClick = onDoubleClick
         textView.onToggleTask = onToggleTask
+        textView.onDoubleClick = onDoubleClick
         return textView
     }
 
     func updateNSView(_ textView: MarkdownTextView, context: Context) {
         context.coordinator.onToggle = onToggle
+        context.coordinator.onToggleTask = onToggleTask
         textView.onToggleCollapse = onToggle
-        textView.onDoubleClick = onDoubleClick
         textView.onToggleTask = onToggleTask
+        textView.onDoubleClick = onDoubleClick
         // 排版高度变化时回写 SwiftUI 的显式高度（异步：布局回调里同步改 state
         // 会触发 "Modifying state during view update"）。
         textView.onLayoutHeightChanged = { [heightBinding = $measuredHeight] height in
@@ -187,7 +189,7 @@ struct MarkdownTextRepresentable: NSViewRepresentable {
             collapsedSections: collapsedSections,
             highlightText: highlightText,
             contentWidth: contentWidth,
-            // checkbox 链接是否生成是构建期输入：同一内容从只读变成可点时必须重建。
+            // 任务行链接是否生成是构建期输入：同一内容从只读变成可点时必须重建。
             tasksClickable: onToggleTask != nil
         )
         guard coordinator.lastRenderKey != key else {
@@ -261,6 +263,7 @@ struct MarkdownTextRepresentable: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var onToggle: (String) -> Void
+        var onToggleTask: ((Int) -> Void)?
 
         /// 上次渲染的输入指纹：markdown、折叠集合、高亮词、内容宽度、checkbox 是否可点。
         struct RenderKey: Equatable {
@@ -275,19 +278,30 @@ struct MarkdownTextRepresentable: NSViewRepresentable {
         /// 已排队待重建的容器宽度：同一宽度只排一次，防止布局期内重复派发。
         var scheduledFixWidth: CGFloat?
 
-        init(onToggle: @escaping (String) -> Void) {
+        init(onToggle: @escaping (String) -> Void, onToggleTask: ((Int) -> Void)?) {
             self.onToggle = onToggle
+            self.onToggleTask = onToggleTask
         }
 
+        /// 内部链接的点击入口。走代理而不是 mouseDown 命中测试：AppKit 只在
+        /// 「点击」时回调（按下后拖动选字不会触发），所以在任务行上拖选文字仍然可用。
+        /// 连击（clickCount ≥ 2）不经这里，由 MarkdownTextView.mouseDown 兜底。
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
             guard let url = link as? URL else { return false }
 
-            // 折叠/展开标题链接（<linkScheme>://collapse?key=…）。
             if url.scheme == DanboMarkdownConfiguration.linkScheme,
-               let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-               let key = components.queryItems?.first(where: { $0.name == "key" })?.value {
-                onToggle(key)
-                return true
+               let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+                // 任务行链接（<linkScheme>://task?line=…）：checkbox 与行内文字都命中。
+                if let line = MarkdownAttributedBuilder.taskLine(from: url) {
+                    onToggleTask?(line)
+                    return true
+                }
+
+                // 折叠/展开标题链接（<linkScheme>://collapse?key=…）。
+                if let key = components.queryItems?.first(where: { $0.name == "key" })?.value {
+                    onToggle(key)
+                    return true
+                }
             }
 
             // 本地附件链接（file://…）：点击用默认应用打开文件。
@@ -479,11 +493,11 @@ final class MarkdownTextView: NSTextView {
     /// 折叠/展开标题的切换回调。命中标题链接时调用；nil 时走 `clickedOnLink` 兜底。
     var onToggleCollapse: ((String) -> Void)?
 
-    /// 任务 checkbox 的点击回调，参数为源 Markdown 行号（0 起）。nil 时任务标记不带链接。
-    var onToggleTask: ((Int) -> Void)?
-
     /// 双击回调（如「双击项目简介进入编辑」）。nil 时双击走默认的整词选中。
     var onDoubleClick: (() -> Void)?
+
+    /// 任务行点击回调（参数为源 Markdown 行号）；见 mouseDown 里的连击兜底。
+    var onToggleTask: ((Int) -> Void)?
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
@@ -498,8 +512,10 @@ final class MarkdownTextView: NSTextView {
             onToggleCollapse?(key)
             return
         }
-        // 命中任务 checkbox 链接：翻转源行勾选状态并消费本次点击。
-        if let line = taskLine(at: point) {
+        // 任务行连击兜底：AppKit 只在单击时回调 clickedOnLink，连击（同一处点第二次
+        // 起）不再回调，任务行就「点一次能翻转、再点没反应」，只有挪开鼠标重新单击
+        // 才行。单击仍交给 clickedOnLink，保留按下拖动选字的能力。
+        if event.clickCount > 1, let line = taskLine(at: point) {
             onToggleTask?(line)
             return
         }
@@ -510,6 +526,12 @@ final class MarkdownTextView: NSTextView {
         super.mouseDown(with: event)
     }
 
+    /// 返回 point 上任务链接对应的源 Markdown 行号（无命中则返回 nil）。
+    func taskLine(at point: NSPoint) -> Int? {
+        guard let url = linkURL(at: point) else { return nil }
+        return MarkdownAttributedBuilder.taskLine(from: url)
+    }
+
     /// 返回落在 point 上的折叠链接 key（若无命中链接则返回 nil）。
     private func collapseKey(at point: NSPoint) -> String? {
         guard let url = linkURL(at: point), url.host == "collapse",
@@ -518,16 +540,8 @@ final class MarkdownTextView: NSTextView {
         return key
     }
 
-    /// 返回落在 point 上的任务链接所携带的源行号（若无命中则返回 nil）。
-    private func taskLine(at point: NSPoint) -> Int? {
-        guard let url = linkURL(at: point), url.host == "task",
-              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let value = components.queryItems?.first(where: { $0.name == "line" })?.value else { return nil }
-        return Int(value)
-    }
-
-    /// point 处字符上的内部链接（折叠标题 / 任务 checkbox 共用命中逻辑，
-    /// scheme 见 DanboMarkdownConfiguration.linkScheme）。
+    /// point 处字符上的内部链接（折叠标题与任务行连击兜底共用；单击由 clickedOnLink
+    /// 代理处理）。
     private func linkURL(at point: NSPoint) -> URL? {
         guard let layoutManager = layoutManager, let textContainer = textContainer, let textStorage = textStorage else { return nil }
         let index = layoutManager.characterIndex(for: point, in: textContainer, fractionOfDistanceBetweenInsertionPoints: nil)

@@ -21,9 +21,10 @@ Swift 5 language mode.
 - **Custom syntax**: `__text__` renders as green emphasis instead of bold.
   CommonMark parses it as the same node as `**text**`, so the original
   delimiters are recovered from the source range.
-- **Interactive**: collapsible heading sections, clickable task checkboxes
-  (the callback carries the source line number), text highlighting, and
-  measured-height callbacks for SwiftUI integration.
+- **Interactive**: collapsible heading sections, clickable task lines (clicking
+  the checkbox or any text on that line toggles it; the callback carries the
+  source line number), text highlighting, and measured-height callbacks for
+  SwiftUI integration.
 - **Headless measurement**: `MarkdownTextMeasurer` reproduces the exact
   rendering pipeline without a window, which powers the regression tests.
 
@@ -54,7 +55,8 @@ struct NoteView: View {
         MarkdownRenderer(
             markdown: content,
             onToggleTask: { line in
-                // Flip the checkbox on `line` in the source Markdown.
+                // Flip the checkbox on `line` in the source Markdown (clicking the
+                // checkbox or any text on that line fires this).
             },
             onMeasuredHeight: { height in
                 // Full laid-out height, independent of any display-level clipping.
@@ -69,7 +71,7 @@ Notes:
 
 - The whole pipeline is main-thread/AppKit only, like `NSTextView` itself.
 - `linkScheme` should be set once at startup; internal links (section
-  collapse, task checkboxes) are generated and recognized with this scheme.
+  collapse, task lines) are generated and recognized with this scheme.
 
 ## Development
 

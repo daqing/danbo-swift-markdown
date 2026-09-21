@@ -58,20 +58,36 @@ final class MarkdownSyntaxTests: XCTestCase {
     }
 
     /// 任务块的 sourceLine 是源 Markdown 的 0 基行号：宿主 onToggleTask 靠它回写
-    /// 对应行的勾选状态，差一行就会改错笔记内容。
+    /// 对应行的勾选状态，差一行就会改错笔记内容。整行（checkbox 与文字）都要挂上
+    /// 同一个链接，点行内文字才能同样翻转勾选状态。
     func testTaskSourceLineIsZeroBasedAndPointsAtItsOwnLine() throws {
         let markdown = "# 标题\n\n正文\n- [ ] 第一项\n- [x] 第二项"
         let rendered = render(markdown)
 
-        for (marker, expectedLine) in [("☐", 3), ("☑", 4)] {
-            let found = try range(of: marker, in: rendered)
-            let link = try XCTUnwrap(
-                rendered.attribute(.link, at: found.location, effectiveRange: nil) as? URL,
-                "任务标记「\(marker)」必须带可点击的任务链接"
-            )
-            XCTAssertEqual(queryValue(named: "line", in: link), String(expectedLine),
-                           "任务标记「\(marker)」应回写源 Markdown 的第 \(expectedLine) 行（0 基）")
+        for (marker, text, expectedLine) in [("☐", "第一项", 3), ("☑", "第二项", 4)] {
+            for target in [marker, text] {
+                let found = try range(of: target, in: rendered)
+                let link = try XCTUnwrap(
+                    rendered.attribute(.link, at: found.location, effectiveRange: nil) as? URL,
+                    "任务行的「\(target)」必须带可点击的任务链接"
+                )
+                XCTAssertEqual(queryValue(named: "line", in: link), String(expectedLine),
+                               "任务行的「\(target)」应回写源 Markdown 的第 \(expectedLine) 行（0 基）")
+            }
         }
+    }
+
+    /// 任务行整行可点，但行内自带的链接不能被任务链接覆盖：点了还是打开原链接。
+    func testTaskLineKeepsItsOwnInlineLink() throws {
+        let rendered = render("- [ ] 读 [文档](https://example.com/docs) 并归档")
+
+        let linkRange = try range(of: "文档", in: rendered)
+        let link = try XCTUnwrap(rendered.attribute(.link, at: linkRange.location, effectiveRange: nil) as? URL)
+        XCTAssertEqual(link.absoluteString, "https://example.com/docs", "行内链接必须保留自己的 URL")
+
+        let textRange = try range(of: "归档", in: rendered)
+        let taskLink = try XCTUnwrap(rendered.attribute(.link, at: textRange.location, effectiveRange: nil) as? URL)
+        XCTAssertEqual(taskLink.host, "task", "链接之外的文字仍是任务链接")
     }
 
     /// GFM 表格：表头与数据行都渲染出来，且分隔行只用于声明对齐、不能落进正文。

@@ -16,8 +16,8 @@
   全部由 swift-markdown 的 AST 遍历产出，并自动检测裸链接。
 - **自定义语法**：`__文字__` 渲染为绿色强调，而不是加粗。CommonMark 把它解析成
   与 `**文字**` 相同的节点，因此原始分隔符要靠源码 range 回查区分。
-- **交互能力**：可折叠的标题章节、可点击的任务 checkbox（回调携带源行号）、
-  文本高亮，以及用于 SwiftUI 集成的测高回写。
+- **交互能力**：可折叠的标题章节、可点击的任务行（点 checkbox 或该行任意文字都
+  翻转勾选状态，回调携带源行号）、文本高亮，以及用于 SwiftUI 集成的测高回写。
 - **无窗口测量**：`MarkdownTextMeasurer` 在无窗口环境复现完全相同的渲染管线，
   回归测试由此驱动。
 
@@ -48,7 +48,7 @@ struct NoteView: View {
         MarkdownRenderer(
             markdown: content,
             onToggleTask: { line in
-                // 在源 Markdown 中翻转第 line 行的勾选状态。
+                // 在源 Markdown 中翻转第 line 行的勾选状态（点 checkbox 或该行文字都会触发）。
             },
             onMeasuredHeight: { height in
                 // 全文的实际排版高度，与展示层裁剪无关。
@@ -62,7 +62,7 @@ struct NoteView: View {
 注意：
 
 - 与 `NSTextView` 本身一样，整条管线只能在主线程/AppKit 环境使用。
-- `linkScheme` 应在启动时设置一次；内部链接（章节折叠、任务 checkbox）
+- `linkScheme` 应在启动时设置一次；内部链接（章节折叠、任务行）
   都按该 scheme 生成与识别。
 
 ## 开发

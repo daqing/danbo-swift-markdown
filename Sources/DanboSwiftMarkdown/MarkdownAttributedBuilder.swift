@@ -200,10 +200,14 @@ enum MarkdownAttributedBuilder {
                 paragraphStyle: style
             ))
             let markerLength = (marker as NSString).length
-            // checkbox 可点击（OKR 进度等所见即所得更新）：给标记字符挂任务链接，
-            // 点击后翻转源 Markdown 对应行的勾选状态。只读场景（项目简介等）不加链接。
+            // 任务行整行可点（OKR 进度等所见即所得更新）：checkbox 与行内文字都挂任务
+            // 链接，点击任一处都翻转源 Markdown 对应行的勾选状态。行内自带的链接
+            // （Markdown 链接 / 裸链接）保留自己的 URL，点击仍是打开链接。
+            // 只读场景（项目简介等）不加链接。
             if taskLinksEnabled, block.sourceLine >= 0, let url = taskURL(forLine: block.sourceLine) {
-                line.addAttribute(.link, value: url, range: NSRange(location: 0, length: markerLength))
+                for range in taskLinkRanges(in: line) {
+                    line.addAttribute(.link, value: url, range: range)
+                }
             }
             if isDone {
                 // 划线只打在任务文字上，checkbox 本身保持干净的完成态。
@@ -485,7 +489,7 @@ enum MarkdownAttributedBuilder {
     /// 当前渲染容器的内容宽度，由 updateNSView 在每次渲染前写入，用于让图片自适应容器。
     static var availableContentWidth: CGFloat = imageMaxWidth
 
-    /// 任务 checkbox 是否渲染为可点击链接（scheme 见 DanboMarkdownConfiguration.linkScheme，
+    /// 任务行是否渲染为可点击链接（scheme 见 DanboMarkdownConfiguration.linkScheme，
     /// host 为 task），由 build 在每次构建前写入。
     private static var taskLinksEnabled = false
 
@@ -850,14 +854,35 @@ enum MarkdownAttributedBuilder {
         return components.url
     }
 
-    /// 任务 checkbox 链接：携带任务行在源 Markdown 中的行号（0 起），
-    /// 点击后由 MarkdownTextView 回调翻转该行勾选状态。
+    /// 任务行链接：携带任务行在源 Markdown 中的行号（0 起），
+    /// 点击后由 MarkdownRenderer 的 onToggleTask 回调翻转该行勾选状态。
     private static func taskURL(forLine line: Int) -> URL? {
         var components = URLComponents()
         components.scheme = DanboMarkdownConfiguration.linkScheme
         components.host = "task"
         components.queryItems = [URLQueryItem(name: "line", value: String(line))]
         return components.url
+    }
+
+    /// 任务链接（<linkScheme>://task?line=N）里的源行号；不是任务链接则为 nil。
+    static func taskLine(from url: URL) -> Int? {
+        guard url.scheme == DanboMarkdownConfiguration.linkScheme,
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.host == "task",
+              let value = components.queryItems?.first(where: { $0.name == "line" })?.value,
+              let line = Int(value) else { return nil }
+        return line
+    }
+
+    /// 任务行里还没带链接的字符区间（整行挂任务链接时用）。
+    /// 先收集再写入：边枚举 `.link` 边改写同一个属性会打乱枚举的范围切分。
+    private static func taskLinkRanges(in attributed: NSAttributedString) -> [NSRange] {
+        var ranges: [NSRange] = []
+        attributed.enumerateAttribute(.link, in: NSRange(location: 0, length: attributed.length), options: []) { value, range, _ in
+            guard value == nil else { return }
+            ranges.append(range)
+        }
+        return ranges
     }
 
     private static func applyHighlight(to attributed: NSMutableAttributedString, highlightText: String) {
