@@ -75,3 +75,7 @@ swift test
 测试套件（`Tests/DanboSwiftMarkdownTests`）覆盖测高契约：内容原地改写后必须
 重新测量、跨宽度构建必须与全新渲染一致、图片必须按真实容器宽度重新缩放、
 代码块卡片不得与相邻段落重叠。
+
+## 授权协议
+
+MIT，详见 [LICENSE](LICENSE)。
