@@ -424,9 +424,8 @@ enum MarkdownAttributedBuilder {
             // 其余节点（CustomInline、InlineAttributes 等）：有子节点就继续下钻，否则退回纯文本。
             let nested = children(of: node)
             if nested.isEmpty {
-                if let convertible = node as? PlainTextConvertibleMarkup {
-                    appendText(convertible.plainText, to: result, style: style)
-                }
+                // InlineMarkup 本身继承 PlainTextConvertibleMarkup，无需再判定转换。
+                appendText(node.plainText, to: result, style: style)
             } else {
                 append(nested, to: result, style: style, htmlBreaksAsSpaces: htmlBreaksAsSpaces)
             }
