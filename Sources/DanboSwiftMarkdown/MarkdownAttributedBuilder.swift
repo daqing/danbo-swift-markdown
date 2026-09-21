@@ -5,6 +5,7 @@
 
 import AppKit
 import Foundation
+import Markdown
 
 // 代码块卡片：圆角 + 内边距。NSAttributedString.backgroundColor 只能画直角矩形，
 // 因此这里用自定义 attribute 标记代码区，由 MarkdownTextView.drawBackground 自绘圆角卡片。
@@ -51,12 +52,9 @@ enum MarkdownAttributedBuilder {
             : NSColor(srgbRed: 0.22, green: 0.56, blue: 0.24, alpha: 1)
     }
 
-    // __Foo__ 在标准 Markdown 里等同于加粗，Foundation 会把它解析成 stronglyEmphasized，
-    // 因此先用哨兵字符包裹内文，解析完再剥掉哨兵并给内文打上绿色标记。
-    private static let greenTextAttributeKey = NSAttributedString.Key("DanboSwiftMarkdown.greenText")
-    private static let greenSpanRegex = try? NSRegularExpression(pattern: "__([^_\n]+)__")
-    private static let greenSpanStart: unichar = 0xE000
-    private static let greenSpanEnd: unichar = 0xE001
+    // __Foo__ 与 **Foo** 在 CommonMark 里都解析成加粗节点，AST 不保留原始分隔符，
+    // 因此绿色强调靠回查源码区分，见 isGreenStrong。
+
 
     // 链接：Notion 采用与正文同色 + 下划线的处理。
     private static let linkColor = NSColor.labelColor
@@ -81,12 +79,16 @@ enum MarkdownAttributedBuilder {
     private static let linkDetector: NSDataDetector? = try? NSDataDetector(
         types: NSTextCheckingResult.CheckingType.link.rawValue
     )
-    // 缓存内联渲染结果，避免折叠/展开时重复解析 Markdown 与链接检测。
-    private static var inlineCache: [String: NSAttributedString] = [:]
+    /// 当前构建所用的源 Markdown：AST 不保留原始分隔符，自定义的绿色强调要靠源码位置
+    /// 回查区分（见 isGreenStrong）。与 availableContentWidth 一样属于构建期输入，
+    /// 由 build 在每次构建前写入；全部在主线程读写，与渲染管线同一线程约定。
+    private static var currentSource: MarkdownSource?
+
     private static let newline = NSAttributedString(string: "\n")
 
     static func build(markdown: String, collapsedSections: Set<String>, highlightText: String?, taskLinksEnabled: Bool = false) -> NSAttributedString {
         self.taskLinksEnabled = taskLinksEnabled
+        self.currentSource = MarkdownSource(markdown)
         let root = MarkdownSectionParser.parse(markdown)
         let result = NSMutableAttributedString()
 
@@ -161,44 +163,58 @@ enum MarkdownAttributedBuilder {
     private static func appendBlock(_ block: MarkdownBlock, to result: NSMutableAttributedString, indent: CGFloat, followedByDivider: Bool) {
         let start = result.length
         switch block.kind {
-        case let .paragraph(text):
-            result.append(inline(text, baseFont: bodyFont, color: primaryColor, paragraphStyle: paragraphStyle(indent: indent)))
+        case let .paragraph(content):
+            // 整段只有一张图片时按图片段落排版（上下留白与正文段落不同）。
+            let isImage = isSingleImage(content)
+            let style = isImage ? imageParagraphStyle(indent: indent) : paragraphStyle(indent: indent)
+            result.append(inline(content, baseFont: bodyFont, color: primaryColor, paragraphStyle: style))
             result.append(newline)
-            tightenInnerLineSpacing(in: result, within: NSRange(location: start, length: result.length - start))
+            if !isImage {
+                tightenInnerLineSpacing(in: result, within: NSRange(location: start, length: result.length - start))
+            }
 
         case let .unordered(items):
             for item in items {
-                result.append(inline("•  " + item, baseFont: bodyFont, color: primaryColor, paragraphStyle: listParagraphStyle(indent: indent, markerWidth: 16)))
+                let style = listParagraphStyle(indent: indent, markerWidth: 16)
+                result.append(inlineLine(marker: "•  ", content: item, baseFont: bodyFont, color: primaryColor, paragraphStyle: style))
                 result.append(newline)
             }
             setTrailingParagraphSpacing(10, in: result, within: NSRange(location: start, length: result.length - start))
 
         case let .ordered(items):
-            for (number, text) in items {
-                result.append(inline("\(number).  " + text, baseFont: bodyFont, color: primaryColor, paragraphStyle: listParagraphStyle(indent: indent, markerWidth: 22)))
+            for (number, content) in items {
+                let style = listParagraphStyle(indent: indent, markerWidth: 22)
+                result.append(inlineLine(marker: "\(number).  ", content: content, baseFont: bodyFont, color: primaryColor, paragraphStyle: style))
                 result.append(newline)
             }
             setTrailingParagraphSpacing(10, in: result, within: NSRange(location: start, length: result.length - start))
 
-        case let .task(isDone, text):
+        case let .task(isDone, content):
             let marker = isDone ? "☑  " : "☐  "
-            let line = NSMutableAttributedString(attributedString: inline(marker + text, baseFont: bodyFont, color: isDone ? secondaryColor : primaryColor, paragraphStyle: listParagraphStyle(indent: indent, markerWidth: 18)))
+            let style = listParagraphStyle(indent: indent, markerWidth: 18)
+            let line = NSMutableAttributedString(attributedString: inlineLine(
+                marker: marker,
+                content: content,
+                baseFont: bodyFont,
+                color: isDone ? secondaryColor : primaryColor,
+                paragraphStyle: style
+            ))
+            let markerLength = (marker as NSString).length
             // checkbox 可点击（OKR 进度等所见即所得更新）：给标记字符挂任务链接，
             // 点击后翻转源 Markdown 对应行的勾选状态。只读场景（项目简介等）不加链接。
             if taskLinksEnabled, block.sourceLine >= 0, let url = taskURL(forLine: block.sourceLine) {
-                line.addAttribute(.link, value: url, range: NSRange(location: 0, length: (marker as NSString).length))
+                line.addAttribute(.link, value: url, range: NSRange(location: 0, length: markerLength))
             }
             if isDone {
                 // 划线只打在任务文字上，checkbox 本身保持干净的完成态。
-                let markerLength = (marker as NSString).length
                 line.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: NSRange(location: markerLength, length: line.length - markerLength))
             }
             result.append(line)
             result.append(newline)
             setTrailingParagraphSpacing(10, in: result, within: NSRange(location: start, length: result.length - start))
 
-        case let .quote(text):
-            let line = NSMutableAttributedString(attributedString: inline(text, baseFont: bodyFont, color: secondaryColor, paragraphStyle: paragraphStyle(indent: indent + 4)))
+        case let .quote(content):
+            let line = NSMutableAttributedString(attributedString: inline(content, baseFont: bodyFont, color: secondaryColor, paragraphStyle: paragraphStyle(indent: indent + 4)))
             line.addAttribute(.backgroundColor, value: quoteBackgroundColor, range: NSRange(location: 0, length: line.length))
             result.append(line)
             result.append(newline)
@@ -219,9 +235,6 @@ enum MarkdownAttributedBuilder {
             setTrailingParagraphSpacing(20, in: attributed, within: NSRange(location: 0, length: attributed.length))
             result.append(attributed)
             result.append(newline)
-
-        case let .image(alt, url):
-            appendImage(url, alt: alt, to: result, indent: indent)
 
         case let .table(header, alignments, rows):
             appendTable(header: header, alignments: alignments, rows: rows, to: result, indent: indent)
@@ -317,82 +330,148 @@ enum MarkdownAttributedBuilder {
         attributed.addAttribute(.paragraphStyle, value: style, range: paragraphRange)
     }
 
-    private static func inline(_ source: String, baseFont: NSFont, color: NSColor, paragraphStyle: NSParagraphStyle) -> NSAttributedString {
-        // 无图片引用时直接走原有快速路径，保留文本缓存与字体重映射。
-        guard source.contains("![") else {
-            return inlineText(source, baseFont: baseFont, color: color, paragraphStyle: paragraphStyle)
-        }
+    // MARK: 行内渲染
 
-        let tokens = splitInlineImages(source)
-        // 字符串含 "![" 但没有真正的图片引用时，同样退回快速路径。
-        guard tokens.contains(where: { if case .image = $0 { return true } else { return false } }) else {
-            return inlineText(source, baseFont: baseFont, color: color, paragraphStyle: paragraphStyle)
-        }
+    /// 行内渲染上下文：walk 行内 AST 时逐层叠加的字体、颜色与装饰。
+    private struct InlineStyle {
+        var font: NSFont
+        var color: NSColor
+        var strikethrough = false
+        var link: URL?
+    }
 
-        let mutable = NSMutableAttributedString()
-        for token in tokens {
-            switch token {
-            case let .text(segment):
-                mutable.append(inlineText(segment, baseFont: baseFont, color: color, paragraphStyle: paragraphStyle))
-            case let .image(alt, url):
-                if let attachment = imageAttachment(from: url) {
-                    let attributed = NSMutableAttributedString(attributedString: NSAttributedString(attachment: attachment))
-                    let range = NSRange(location: 0, length: attributed.length)
-                    attributed.addAttribute(.paragraphStyle, value: paragraphStyle, range: range)
-                    mutable.append(attributed)
-                } else {
-                    mutable.append(inlineText(alt, baseFont: baseFont, color: color, paragraphStyle: paragraphStyle))
+    /// 渲染一段行内 AST，并按整段施加段落样式与裸链接检测。
+    private static func inline(_ content: MarkdownInline, baseFont: NSFont, color: NSColor, paragraphStyle: NSParagraphStyle, htmlBreaksAsSpaces: Bool = false) -> NSAttributedString {
+        inlineLine(marker: "", content: content, baseFont: baseFont, color: color, paragraphStyle: paragraphStyle, htmlBreaksAsSpaces: htmlBreaksAsSpaces)
+    }
+
+    /// 渲染「标记 + 行内内容」组成的一行（列表圆点、序号、任务 checkbox 都走这里）：
+    /// 段落样式必须覆盖整行（含标记），否则排版器按段首字符取样式会拿不到。
+    private static func inlineLine(marker: String, content: MarkdownInline, baseFont: NSFont, color: NSColor, paragraphStyle: NSParagraphStyle, htmlBreaksAsSpaces: Bool = false) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        let style = InlineStyle(font: baseFont, color: color)
+        appendText(marker, to: result, style: style)
+        append(content, to: result, style: style, htmlBreaksAsSpaces: htmlBreaksAsSpaces)
+        let full = NSRange(location: 0, length: result.length)
+        result.addAttribute(.paragraphStyle, value: paragraphStyle, range: full)
+        addDetectedLinks(to: result, in: full)
+        return result
+    }
+
+    private static func append(_ content: MarkdownInline, to result: NSMutableAttributedString, style: InlineStyle, htmlBreaksAsSpaces: Bool) {
+        for node in content {
+            append(node, to: result, style: style, htmlBreaksAsSpaces: htmlBreaksAsSpaces)
+        }
+    }
+
+    private static func append(_ node: any InlineMarkup, to result: NSMutableAttributedString, style: InlineStyle, htmlBreaksAsSpaces: Bool) {
+        switch node {
+        case let text as Markdown.Text:
+            appendText(text.string, to: result, style: style)
+
+        case let code as Markdown.InlineCode:
+            var codeStyle = style
+            codeStyle.font = .monospacedSystemFont(ofSize: style.font.pointSize * 0.92, weight: .regular)
+            let start = result.length
+            appendText(code.code, to: result, style: codeStyle)
+            result.addAttribute(.backgroundColor, value: inlineCodeBackgroundColor, range: NSRange(location: start, length: result.length - start))
+
+        case let strong as Markdown.Strong:
+            var strongStyle = style
+            strongStyle.font = .systemFont(ofSize: style.font.pointSize, weight: .semibold)
+            strongStyle.color = isGreenStrong(strong) ? greenTextColor : boldColor
+            append(children(of: strong), to: result, style: strongStyle, htmlBreaksAsSpaces: htmlBreaksAsSpaces)
+
+        case let emphasis as Markdown.Emphasis:
+            var emphasisStyle = style
+            emphasisStyle.font = NSFontManager.shared.convert(style.font, toHaveTrait: .italicFontMask)
+            append(children(of: emphasis), to: result, style: emphasisStyle, htmlBreaksAsSpaces: htmlBreaksAsSpaces)
+
+        case let strikethrough as Markdown.Strikethrough:
+            var strikethroughStyle = style
+            strikethroughStyle.strikethrough = true
+            append(children(of: strikethrough), to: result, style: strikethroughStyle, htmlBreaksAsSpaces: htmlBreaksAsSpaces)
+
+        case let link as Markdown.Link:
+            var linkStyle = style
+            if let destination = link.destination {
+                linkStyle.link = URL(string: destination)
+            }
+            let start = result.length
+            append(children(of: link), to: result, style: linkStyle, htmlBreaksAsSpaces: htmlBreaksAsSpaces)
+            if let url = linkStyle.link, result.length > start {
+                result.addAttribute(.link, value: url, range: NSRange(location: start, length: result.length - start))
+            }
+
+        case let image as Markdown.Image:
+            appendImage(image, to: result, style: style, htmlBreaksAsSpaces: htmlBreaksAsSpaces)
+
+        case is Markdown.SoftBreak, is Markdown.LineBreak:
+            appendText("\n", to: result, style: style)
+
+        case let html as Markdown.InlineHTML:
+            // 表格单元格不支持行内 HTML：`<br>` 这类换行标记按空白渲染。
+            appendText(htmlBreaksAsSpaces && isBreakTag(html.rawHTML) ? " " : html.rawHTML, to: result, style: style)
+
+        case let symbol as Markdown.SymbolLink:
+            appendText(symbol.destination ?? "", to: result, style: style)
+
+        default:
+            // 其余节点（CustomInline、InlineAttributes 等）：有子节点就继续下钻，否则退回纯文本。
+            let nested = children(of: node)
+            if nested.isEmpty {
+                if let convertible = node as? PlainTextConvertibleMarkup {
+                    appendText(convertible.plainText, to: result, style: style)
                 }
-            }
-        }
-        return mutable
-    }
-
-    private static func inlineText(_ source: String, baseFont: NSFont, color: NSColor, paragraphStyle: NSParagraphStyle) -> NSAttributedString {
-        let mutable = NSMutableAttributedString(attributedString: cachedInlineMarkdown(source))
-        let full = NSRange(location: 0, length: mutable.length)
-        // 先铺底色再重映射字体：加粗的红色由 remapFonts 覆盖在底色之上。
-        mutable.addAttribute(.foregroundColor, value: color, range: full)
-        mutable.addAttribute(.paragraphStyle, value: paragraphStyle, range: full)
-        remapFonts(in: mutable, baseFont: baseFont)
-        return mutable
-    }
-
-    /// 把一段行内文本按图片引用切分成「普通文本 / 图片」tokens。
-    private enum InlineImageToken {
-        case text(String)
-        case image(alt: String, url: URL)
-    }
-
-    private static let inlineImageRegex = try? NSRegularExpression(
-        pattern: #"!\[([^\]]*)\]\(([^)]+)\)"#
-    )
-
-    private static func splitInlineImages(_ source: String) -> [InlineImageToken] {
-        let ns = source as NSString
-        guard let regex = inlineImageRegex else { return [.text(source)] }
-        let matches = regex.matches(in: source, range: NSRange(location: 0, length: ns.length))
-        guard !matches.isEmpty else { return [.text(source)] }
-
-        var tokens: [InlineImageToken] = []
-        var location = 0
-        for match in matches {
-            if match.range.location > location {
-                tokens.append(.text(ns.substring(with: NSRange(location: location, length: match.range.location - location))))
-            }
-            let alt = ns.substring(with: match.range(at: 1))
-            let urlString = ns.substring(with: match.range(at: 2))
-            if let url = URL(string: urlString) {
-                tokens.append(.image(alt: alt, url: url))
             } else {
-                tokens.append(.text(ns.substring(with: match.range)))
+                append(nested, to: result, style: style, htmlBreaksAsSpaces: htmlBreaksAsSpaces)
             }
-            location = match.range.location + match.range.length
         }
-        if location < ns.length {
-            tokens.append(.text(ns.substring(with: NSRange(location: location, length: ns.length - location))))
+    }
+
+    private static func children(of markup: Markup) -> MarkdownInline {
+        markup.children.compactMap { $0 as? any InlineMarkup }
+    }
+
+    private static func appendText(_ text: String, to result: NSMutableAttributedString, style: InlineStyle) {
+        guard !text.isEmpty else { return }
+        var attributes: [NSAttributedString.Key: Any] = [
+            .font: style.font,
+            .foregroundColor: style.color
+        ]
+        if style.strikethrough {
+            attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
         }
-        return tokens
+        if let link = style.link {
+            attributes[.link] = link
+        }
+        result.append(NSAttributedString(string: text, attributes: attributes))
+    }
+
+    /// `__Foo__` 在 CommonMark 里与 `**Foo**` 等价，都解析成加粗节点；AST 不保留分隔符，
+    /// 只能按节点的源码位置回查源串区分两者（见 MarkdownSource）。
+    private static func isGreenStrong(_ strong: Markdown.Strong) -> Bool {
+        guard let source = currentSource, let range = strong.range else { return false }
+        return source.hasPrefix("__", at: range.lowerBound)
+    }
+
+    private static func isBreakTag(_ html: String) -> Bool {
+        let compact = html.lowercased().replacingOccurrences(of: " ", with: "")
+        return compact == "<br>" || compact == "<br/>"
+    }
+
+    /// 整段只有一张图片：按图片段落排版（上下留白与正文段落不同）。
+    private static func isSingleImage(_ content: MarkdownInline) -> Bool {
+        content.count == 1 && content[0] is Markdown.Image
+    }
+
+    private static func appendImage(_ image: Markdown.Image, to result: NSMutableAttributedString, style: InlineStyle, htmlBreaksAsSpaces: Bool) {
+        if let source = image.source, let url = URL(string: source), let attachment = imageAttachment(from: url) {
+            result.append(NSAttributedString(attachment: attachment))
+        } else {
+            // 图片加载失败：显示 alt 文本，避免内容凭空消失。
+            append(children(of: image), to: result, style: style, htmlBreaksAsSpaces: htmlBreaksAsSpaces)
+        }
     }
 
     // MARK: 图片附件
@@ -443,20 +522,6 @@ enum MarkdownAttributedBuilder {
         return attachment
     }
 
-    /// 独立成行的图片：追加附件 + 换行，并带上下留白。
-    private static func appendImage(_ url: URL, alt: String, to result: NSMutableAttributedString, indent: CGFloat) {
-        let style = imageParagraphStyle(indent: indent)
-        if let attachment = imageAttachment(from: url) {
-            let attributed = NSMutableAttributedString(attributedString: NSAttributedString(attachment: attachment))
-            attributed.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: attributed.length))
-            result.append(attributed)
-        } else {
-            // 图片加载失败：显示 alt 文本，避免内容凭空消失。
-            result.append(inlineText(alt, baseFont: bodyFont, color: secondaryColor, paragraphStyle: style))
-        }
-        result.append(newline)
-    }
-
     private static func imageParagraphStyle(indent: CGFloat) -> NSParagraphStyle {
         let style = NSMutableParagraphStyle()
         style.paragraphSpacingBefore = imageParagraphSpacing
@@ -476,25 +541,18 @@ enum MarkdownAttributedBuilder {
     /// MarkdownTextView 依据行段落上的 TableRowInfo 属性自绘。
     /// 不用制表位/kern（在当前文本引擎下不可靠），也不用 NSTextTable（NSBlock
     /// 表格布局在当前系统的文本引擎下无法成格）；附件宽度是最稳定的占位手段。
-    private static func appendTable(header: [String], alignments: [TableAlignment], rows: [[String]], to result: NSMutableAttributedString, indent: CGFloat) {
+    private static func appendTable(header: [MarkdownInline], alignments: [TableAlignment], rows: [[MarkdownInline]], to result: NSMutableAttributedString, indent: CGFloat) {
         let columnCount = max(header.count, rows.map(\.count).max() ?? 0)
         guard columnCount > 0 else { return }
         // 嵌套缩进（如折叠标题下的表格）忽略：列位置与网格线统一按容器左缘计算。
         let contentWidth = max(40, availableContentWidth)
 
-        func padToColumns(_ cells: [String]) -> [String] {
+        func padToColumns(_ cells: [MarkdownInline]) -> [MarkdownInline] {
             var padded = cells
             if padded.count < columnCount {
-                padded.append(contentsOf: Array(repeating: "", count: columnCount - padded.count))
+                padded.append(contentsOf: Array(repeating: [], count: columnCount - padded.count))
             }
             return padded
-        }
-
-        // GFM 不支持 HTML，单元格里的 `<br>` 等换行标记按普通空白渲染。
-        func normalized(_ cell: String) -> String {
-            cell.replacingOccurrences(of: "<br>", with: " ", options: .caseInsensitive)
-                .replacingOccurrences(of: "<br/>", with: " ", options: .caseInsensitive)
-                .replacingOccurrences(of: "<br />", with: " ", options: .caseInsensitive)
         }
 
         let headerFont = NSFont.systemFont(ofSize: DanboMarkdownConfiguration.bodyFontSize, weight: .semibold)
@@ -514,9 +572,12 @@ enum MarkdownAttributedBuilder {
         let lastLineStyle = lineStyle(spacingBefore: 0, spacing: tableCellBottomPadding)
 
         // 预渲染每个单元格（行内 Markdown 已生效），量出单行实际宽度。
+        // GFM 不支持 HTML，单元格里的 `<br>` 等换行标记按普通空白渲染。
         let renderedTable = ([header] + rows).enumerated().map { index, row -> [NSAttributedString] in
             let font = index == 0 ? headerFont : bodyFont
-            return padToColumns(row).map { inline(normalized($0), baseFont: font, color: primaryColor, paragraphStyle: singleLineStyle) }
+            return padToColumns(row).map {
+                inline($0, baseFont: font, color: primaryColor, paragraphStyle: singleLineStyle, htmlBreaksAsSpaces: true)
+            }
         }
         let naturalWidths = renderedTable.map { $0.map { $0.size().width } }
 
@@ -657,141 +718,25 @@ enum MarkdownAttributedBuilder {
         return lines.isEmpty ? [attributed] : lines
     }
 
-    private static func cachedInlineMarkdown(_ source: String) -> NSAttributedString {
-        if let cached = inlineCache[source] {
-            return cached
-        }
-        let options = AttributedString.MarkdownParsingOptions(
-            interpretedSyntax: .inlineOnlyPreservingWhitespace
-        )
-        let (prepared, hasGreenSpans) = wrapGreenSpans(in: source)
-        var swift = (try? AttributedString(markdown: prepared, options: options)) ?? AttributedString(prepared)
-        addDetectedLinks(to: &swift)
-        let ns = NSMutableAttributedString(attributedString: NSAttributedString(swift))
-        if hasGreenSpans {
-            markGreenSpans(in: ns)
-        }
-        inlineCache[source] = ns
-        return ns
-    }
+    /// 把裸链接（NSDataDetector 识别出的 URL）补成 .link。
+    /// 只在整段都没有链接的位置添加，避免覆盖 Markdown 里显式写出的链接。
+    private static func addDetectedLinks(to attributed: NSMutableAttributedString, in range: NSRange) {
+        guard let detector = linkDetector, range.length > 0 else { return }
+        let plainText = (attributed.string as NSString).substring(with: range)
+        let searchRange = NSRange(location: 0, length: (plainText as NSString).length)
 
-    /// 把 __Foo__ 换成哨兵包裹的「\u{E000}Foo\u{E001}」，避免被 Foundation 当成加粗。
-    private static func wrapGreenSpans(in source: String) -> (String, Bool) {
-        guard let regex = greenSpanRegex else { return (source, false) }
-        let ns = source as NSString
-        let matches = regex.matches(in: source, range: NSRange(location: 0, length: ns.length))
-        guard !matches.isEmpty else { return (source, false) }
-
-        let result = NSMutableString()
-        var location = 0
-        for match in matches {
-            result.append(ns.substring(with: NSRange(location: location, length: match.range.location - location)))
-            result.append(String(utf16CodeUnits: [greenSpanStart], count: 1))
-            result.append(ns.substring(with: match.range(at: 1)))
-            result.append(String(utf16CodeUnits: [greenSpanEnd], count: 1))
-            location = match.range.location + match.range.length
-        }
-        result.append(ns.substring(from: location))
-        return (result as String, true)
-    }
-
-    /// 剥掉哨兵字符，并给哨兵之间的内文打上绿色标记（下标按剥除后的字符串计算）。
-    private static func markGreenSpans(in attributed: NSMutableAttributedString) {
-        let source = attributed.string as NSString
-        let stripped = NSMutableString()
-        var greenRanges: [NSRange] = []
-        var openLocation: Int?
-
-        for index in 0..<source.length {
-            let character = source.character(at: index)
-            if character == greenSpanStart {
-                openLocation = stripped.length
-            } else if character == greenSpanEnd {
-                if let start = openLocation {
-                    greenRanges.append(NSRange(location: start, length: stripped.length - start))
-                    openLocation = nil
-                }
-            } else {
-                stripped.append(source.substring(with: NSRange(location: index, length: 1)))
+        for match in detector.matches(in: plainText, range: searchRange) {
+            guard let url = match.url else { continue }
+            let target = NSRange(location: range.location + match.range.location, length: match.range.length)
+            var hasLink = false
+            attributed.enumerateAttribute(.link, in: target, options: []) { value, _, stop in
+                guard value != nil else { return }
+                hasLink = true
+                stop.pointee = true
             }
-        }
-
-        // 从后往前删哨兵，避免删除后影响前面的下标。
-        var index = source.length - 1
-        while index >= 0 {
-            let character = source.character(at: index)
-            if character == greenSpanStart || character == greenSpanEnd {
-                attributed.deleteCharacters(in: NSRange(location: index, length: 1))
+            if !hasLink {
+                attributed.addAttribute(.link, value: url, range: target)
             }
-            index -= 1
-        }
-
-        for range in greenRanges {
-            attributed.addAttribute(greenTextAttributeKey, value: true, range: range)
-        }
-    }
-
-    private static func addDetectedLinks(to attributed: inout AttributedString) {
-        let plainText = String(attributed.characters)
-        guard let detector = linkDetector else { return }
-
-        let fullRange = NSRange(plainText.startIndex..., in: plainText)
-        for match in detector.matches(in: plainText, range: fullRange) {
-            guard let url = match.url,
-                  let stringRange = Range(match.range, in: plainText),
-                  let lowerBound = AttributedString.Index(stringRange.lowerBound, within: attributed),
-                  let upperBound = AttributedString.Index(stringRange.upperBound, within: attributed) else {
-                continue
-            }
-            let range = lowerBound..<upperBound
-            if attributed[range].runs.allSatisfy({ $0.link == nil }) {
-                attributed[range].link = url
-            }
-        }
-    }
-
-    /// Foundation 的 Markdown 解析只写入 inlinePresentationIntent，不会附带字体。
-    /// 桥接成 NSAttributedString 后该值是 NSNumber（而非 Swift 的 InlinePresentationIntent），
-    /// 两种形态都要兼容，否则加粗/斜体/行内代码会全部退化成正文样式。
-    private static func inlineIntent(_ attrs: [NSAttributedString.Key: Any]) -> InlinePresentationIntent {
-        if let intent = attrs[.inlinePresentationIntent] as? InlinePresentationIntent {
-            return intent
-        }
-        if let raw = attrs[.inlinePresentationIntent] as? NSNumber {
-            return InlinePresentationIntent(rawValue: raw.uintValue)
-        }
-        return []
-    }
-
-    private static func remapFonts(in attributed: NSMutableAttributedString, baseFont: NSFont) {
-        // 加粗/斜体/行内代码以 intent 判断（字体 trait 作为兜底）。
-        attributed.enumerateAttributes(in: NSRange(location: 0, length: attributed.length), options: []) { attrs, range, _ in
-            let intent = inlineIntent(attrs)
-            let traits = (attrs[.font] as? NSFont)?.fontDescriptor.symbolicTraits ?? []
-
-            let isCode = intent.contains(.code) || traits.contains(.monoSpace)
-            let isBold = intent.contains(.stronglyEmphasized) || traits.contains(.bold)
-            let isItalic = intent.contains(.emphasized) || traits.contains(.italic)
-            let isGreen = attrs[greenTextAttributeKey] != nil
-
-            var font = baseFont
-            if isCode {
-                font = .monospacedSystemFont(ofSize: baseFont.pointSize * 0.92, weight: .regular)
-                attributed.addAttribute(.backgroundColor, value: inlineCodeBackgroundColor, range: range)
-            } else {
-                if isBold {
-                    font = .systemFont(ofSize: baseFont.pointSize, weight: .semibold)
-                    attributed.addAttribute(.foregroundColor, value: boldColor, range: range)
-                }
-                if isGreen {
-                    font = .systemFont(ofSize: baseFont.pointSize, weight: .semibold)
-                    attributed.addAttribute(.foregroundColor, value: greenTextColor, range: range)
-                }
-                if isItalic {
-                    font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
-                }
-            }
-            attributed.addAttribute(.font, value: font, range: range)
         }
     }
 
