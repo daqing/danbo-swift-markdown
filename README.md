@@ -81,3 +81,7 @@ The test suite (`Tests/DanboSwiftMarkdownTests`) covers the height-measurement
 contract: content rewritten in place must re-measure correctly, cross-width
 builds must match fresh renders, images must rescale to the real container
 width, and code-block cards must not overlap adjacent paragraphs.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
