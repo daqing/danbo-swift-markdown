@@ -18,6 +18,10 @@ let codeBlockPaddingY: CGFloat = 8
 /// 不再压住行尾文字（短单行代码块尤其明显）。
 let codeBlockCopyIconReserve: CGFloat = 40
 
+// 行内代码：本身只用底色区分（与引用共用 .backgroundColor），这里额外挂一个属性，
+// 供 [Foo] 蓝色强调跳过代码区（见 styleBracketMarkers）。
+let inlineCodeAttributeKey = NSAttributedString.Key("DanboSwiftMarkdown.inlineCode")
+
 // 表格：单元格折行到所在列宽内，逐行渲染成段落，列位置用空白附件占位推齐；
 // 网格线与表头底色由 MarkdownTextView 依据行段落上的 tableRowAttributeKey 属性自绘。
 let tableRowAttributeKey = NSAttributedString.Key("DanboSwiftMarkdown.tableRow")
@@ -50,6 +54,14 @@ enum MarkdownAttributedBuilder {
         return isDark
             ? NSColor(srgbRed: 0.62, green: 0.91, blue: 0.62, alpha: 1)
             : NSColor(srgbRed: 0.22, green: 0.56, blue: 0.24, alpha: 1)
+    }
+
+    // 自定义语法 [Foo]：蓝色强调（含方括号）。同样按明暗主题各取一档。
+    private static let bracketMarkerColor = NSColor(name: nil) { appearance in
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return isDark
+            ? NSColor(srgbRed: 0.47, green: 0.73, blue: 1.00, alpha: 1)
+            : NSColor(srgbRed: 0.11, green: 0.40, blue: 0.85, alpha: 1)
     }
 
     // __Foo__ 与 **Foo** 在 CommonMark 里都解析成加粗节点，AST 不保留原始分隔符，
@@ -99,6 +111,7 @@ enum MarkdownAttributedBuilder {
 
         styleLinks(in: result)
         trimTrailingWhitespace(in: result)
+        styleBracketMarkers(in: result)
 
         if let highlightText, !highlightText.isEmpty {
             applyHighlight(to: result, highlightText: highlightText)
@@ -378,7 +391,9 @@ enum MarkdownAttributedBuilder {
             codeStyle.font = .monospacedSystemFont(ofSize: style.font.pointSize * 0.92, weight: .regular)
             let start = result.length
             appendText(code.code, to: result, style: codeStyle)
-            result.addAttribute(.backgroundColor, value: inlineCodeBackgroundColor, range: NSRange(location: start, length: result.length - start))
+            let codeRange = NSRange(location: start, length: result.length - start)
+            result.addAttribute(.backgroundColor, value: inlineCodeBackgroundColor, range: codeRange)
+            result.addAttribute(inlineCodeAttributeKey, value: true, range: codeRange)
 
         case let strong as Markdown.Strong:
             var strongStyle = style
@@ -741,6 +756,55 @@ enum MarkdownAttributedBuilder {
                 attributed.addAttribute(.link, value: url, range: target)
             }
         }
+    }
+
+    /// 自定义语法 `[Foo]`：整段（含方括号）用蓝色加粗强调。
+    ///
+    /// 方括号在 CommonMark 里只是普通字符，标记还可能跨行内样式
+    ///（`[需 **确认**]` 在 AST 里拆成三个节点），因此不挑节点，统一在文本构建完成后
+    /// 按最终字符串扫描。代码块与行内代码里的方括号保持字面，不参与匹配。
+    private static func styleBracketMarkers(in attributed: NSMutableAttributedString) {
+        let text = attributed.string as NSString
+        var searchStart = 0
+
+        while searchStart < text.length {
+            let rest = NSRange(location: searchStart, length: text.length - searchStart)
+            let open = text.range(of: "[", options: [], range: rest)
+            guard open.location != NSNotFound else { return }
+            // 内容里出现下一个 `[` 时本次不成立，交给下一轮从那里重新起头。
+            searchStart = NSMaxRange(open)
+
+            let tail = NSRange(location: searchStart, length: text.length - searchStart)
+            guard tail.length > 0 else { return }
+            let close = text.range(of: "]", options: [], range: tail)
+            guard close.location != NSNotFound else { return }
+
+            let content = NSRange(location: searchStart, length: close.location - searchStart)
+            guard content.length > 0,
+                  text.rangeOfCharacter(from: CharacterSet(charactersIn: "[\n"), options: [], range: content).location == NSNotFound,
+                  !isCode(at: open.location, in: attributed),
+                  !isCode(at: close.location, in: attributed) else { continue }
+
+            let marker = NSRange(location: open.location, length: NSMaxRange(close) - open.location)
+            markBracket(marker, in: attributed)
+            searchStart = NSMaxRange(marker)
+        }
+    }
+
+    /// 强调方括号标记：整段换成主题蓝，并把各段字体按原字号加粗
+    ///（标记可能落在标题、表格等不同字号的文本上，字号要保持原样）。
+    private static func markBracket(_ range: NSRange, in attributed: NSMutableAttributedString) {
+        attributed.addAttribute(.foregroundColor, value: bracketMarkerColor, range: range)
+        attributed.enumerateAttribute(.font, in: range, options: []) { value, subrange, _ in
+            let size = (value as? NSFont)?.pointSize ?? DanboMarkdownConfiguration.bodyFontSize
+            attributed.addAttribute(.font, value: NSFont.boldSystemFont(ofSize: size), range: subrange)
+        }
+    }
+
+    /// 该位置是否落在代码块或行内代码里。
+    private static func isCode(at location: Int, in attributed: NSAttributedString) -> Bool {
+        attributed.attribute(codeBlockBackgroundAttributeKey, at: location, effectiveRange: nil) != nil
+            || attributed.attribute(inlineCodeAttributeKey, at: location, effectiveRange: nil) != nil
     }
 
     private static func styleLinks(in attributed: NSMutableAttributedString) {

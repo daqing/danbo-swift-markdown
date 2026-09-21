@@ -57,6 +57,61 @@ final class MarkdownSyntaxTests: XCTestCase {
         XCTAssertNotEqual(greenRGB, try XCTUnwrap(body.usingColorSpace(.sRGB)), "强调色不能与正文同色")
     }
 
+    /// 自定义语法 `[Foo]`：整段（含方括号）蓝色加粗，正文其余部分不受影响。
+    func testBracketMarkerRendersBlueAndBold() throws {
+        let rendered = render("本期重点 [重要] 收尾")
+
+        let marker = try range(of: "[重要]", in: rendered)
+        let markerColor = try foregroundColor(of: "[重要]", in: rendered)
+        XCTAssertNotEqual(try foregroundColor(of: "本期重点", in: rendered), markerColor, "正文不应被染成标记色")
+        XCTAssertNotEqual(try foregroundColor(of: "收尾", in: rendered), markerColor, "正文不应被染成标记色")
+
+        // 首尾两个方括号也要在标记范围内：整段换色 + 加粗。
+        for index in [marker.location, NSMaxRange(marker) - 1] {
+            let color = try XCTUnwrap(rendered.attribute(.foregroundColor, at: index, effectiveRange: nil) as? NSColor)
+            XCTAssertEqual(color, markerColor, "整段（含方括号）用同一个强调色")
+            let rgb = try XCTUnwrap(color.usingColorSpace(.sRGB))
+            XCTAssertGreaterThan(rgb.blueComponent, rgb.redComponent, "[Foo] 走蓝色强调")
+            XCTAssertGreaterThan(rgb.blueComponent, rgb.greenComponent, "[Foo] 走蓝色强调")
+
+            let font = try XCTUnwrap(rendered.attribute(.font, at: index, effectiveRange: nil) as? NSFont)
+            XCTAssertTrue(NSFontManager.shared.traits(of: font).contains(.boldFontMask),
+                          "[Foo] 含方括号必须整段加粗")
+        }
+    }
+
+    /// 标记可能跨行内样式：`[需 **确认**]` 在 AST 里是多个节点，
+    /// 蓝色加粗仍要盖住包括方括号在内的整段。
+    func testBracketMarkerSpanningInlineStyles() throws {
+        let rendered = render("见 [需 **确认**] 的条目")
+
+        let marker = try range(of: "[需 确认]", in: rendered)
+        XCTAssertEqual(marker.length, ("[需 确认]" as NSString).length)
+        for index in [marker.location, NSMaxRange(marker) - 1] {
+            let color = try XCTUnwrap(rendered.attribute(.foregroundColor, at: index, effectiveRange: nil) as? NSColor)
+            let rgb = try XCTUnwrap(color.usingColorSpace(.sRGB))
+            XCTAssertGreaterThan(rgb.blueComponent, rgb.redComponent, "跨样式的标记也要整段变蓝")
+        }
+    }
+
+    /// 代码块与行内代码里的方括号保持字面，不能被蓝色标记吃掉。
+    func testCodeKeepsBracketLiteral() throws {
+        let rendered = render("`[inline]` 与结尾 [标记]\n\n```\n[block]\n```")
+
+        let marker = try range(of: "[标记]", in: rendered)
+        let markerColor = try XCTUnwrap(rendered.attribute(.foregroundColor, at: marker.location, effectiveRange: nil) as? NSColor)
+
+        for code in ["[inline]", "[block]"] {
+            let found = try range(of: code, in: rendered)
+            let color = try XCTUnwrap(rendered.attribute(.foregroundColor, at: found.location, effectiveRange: nil) as? NSColor)
+            XCTAssertNotEqual(color, markerColor, "代码里的 \(code) 不应被当成蓝色标记")
+
+            let font = try XCTUnwrap(rendered.attribute(.font, at: found.location, effectiveRange: nil) as? NSFont)
+            XCTAssertFalse(NSFontManager.shared.traits(of: font).contains(.boldFontMask),
+                           "代码里的 \(code) 不应被加粗")
+        }
+    }
+
     /// 任务块的 sourceLine 是源 Markdown 的 0 基行号：宿主 onToggleTask 靠它回写
     /// 对应行的勾选状态，差一行就会改错笔记内容。整行（checkbox 与文字）都要挂上
     /// 同一个链接，点行内文字才能同样翻转勾选状态。

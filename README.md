@@ -20,7 +20,9 @@ Swift 5 language mode.
   automatic detection of bare URLs.
 - **Custom syntax**: `__text__` renders as green emphasis instead of bold.
   CommonMark parses it as the same node as `**text**`, so the original
-  delimiters are recovered from the source range.
+  delimiters are recovered from the source range. `[text]` renders the whole
+  marker, brackets included, in bold blue; brackets inside code blocks and
+  inline code stay literal.
 - **Interactive**: collapsible heading sections, clickable task lines (clicking
   the checkbox or any text on that line toggles it; the callback carries the
   source line number), text highlighting, and measured-height callbacks for
@@ -89,8 +91,9 @@ contract — content rewritten in place must re-measure correctly, cross-width
 builds must match fresh renders, images must rescale to the real container
 width, and code-block cards must not overlap adjacent paragraphs — plus the
 syntax the AST parser feeds into the renderer: `**bold**` versus `__green__`,
-the 0-based source line on task items, GFM tables with per-column alignment,
-and inline images.
+`[blue]` markers (including ones spanning inline styles, and brackets that must
+stay literal inside code), the 0-based source line on task items, GFM tables
+with per-column alignment, and inline images.
 
 ## License
 
