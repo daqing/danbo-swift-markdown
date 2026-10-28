@@ -79,6 +79,7 @@ final class MarkdownCodeHighlightTests: XCTestCase {
             highlightText: nil,
             onToggle: { _ in },
             onDoubleClick: nil,
+            onClick: nil,
             onToggleTask: nil,
             measuredHeight: .constant(nil),
             skipRenderUntilSized: false,

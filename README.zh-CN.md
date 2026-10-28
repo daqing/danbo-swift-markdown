@@ -30,7 +30,7 @@
 
 | 符号 | 类型 | 用途 |
 | --- | --- | --- |
-| `MarkdownRenderer` | SwiftUI `View` | 渲染 Markdown 字符串；支持折叠请求、任务切换、双击、高亮、测高回写，以及逐实例的 `highlightTheme`。 |
+| `MarkdownRenderer` | SwiftUI `View` | 渲染 Markdown 字符串；支持折叠请求、任务切换、单击与双击回调、高亮、测高回写，以及逐实例的 `highlightTheme`。 |
 | `MarkdownCollapseRequest` | struct | 传给 `MarkdownRenderer` 的全部折叠/展开信号。 |
 | `MarkdownTextMeasurer` | enum | 无窗口排版测量：`height(markdown:width:)`、`height(markdowns:width:)`、`height(_:)`、`debugLineLayout(markdown:width:)`。 |
 | `DanboMarkdownConfiguration` | enum | 全局配置：`bodyFontSize`（默认 15）、`linkScheme`（默认 `"danbo-swift-markdown"`，用于内部折叠/任务链接）与 `highlightTheme`（默认 `nil`，代码块保持单色）。 |

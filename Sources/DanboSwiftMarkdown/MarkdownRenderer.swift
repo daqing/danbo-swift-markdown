@@ -24,6 +24,8 @@ public struct MarkdownRenderer: View {
     public var highlightText: String? = nil
     public var collapseRequest: MarkdownCollapseRequest? = nil
     public var onDoubleClick: (() -> Void)? = nil
+    /// 鼠标按下回调：用于宿主在原生文本视图消费事件前更新自身选中状态。
+    public var onClick: (() -> Void)? = nil
     /// 任务行点击回调（参数为源 Markdown 行号）：点击 checkbox 或该行文字都触发；
     /// nil 时任务行渲染为纯文本。
     public var onToggleTask: ((Int) -> Void)? = nil
@@ -54,6 +56,7 @@ public struct MarkdownRenderer: View {
         highlightText: String? = nil,
         collapseRequest: MarkdownCollapseRequest? = nil,
         onDoubleClick: (() -> Void)? = nil,
+        onClick: (() -> Void)? = nil,
         onToggleTask: ((Int) -> Void)? = nil,
         onMeasuredHeight: ((CGFloat) -> Void)? = nil,
         initialMeasuredHeight: CGFloat? = nil,
@@ -64,6 +67,7 @@ public struct MarkdownRenderer: View {
         self.highlightText = highlightText
         self.collapseRequest = collapseRequest
         self.onDoubleClick = onDoubleClick
+        self.onClick = onClick
         self.onToggleTask = onToggleTask
         self.onMeasuredHeight = onMeasuredHeight
         self._measuredHeight = State(initialValue: initialMeasuredHeight)
@@ -78,6 +82,7 @@ public struct MarkdownRenderer: View {
             highlightText: highlightText,
             onToggle: { toggle($0) },
             onDoubleClick: onDoubleClick,
+            onClick: onClick,
             onToggleTask: onToggleTask,
             measuredHeight: $measuredHeight,
             skipRenderUntilSized: skipRenderUntilSized,
@@ -119,6 +124,7 @@ struct MarkdownTextRepresentable: NSViewRepresentable {
     let highlightText: String?
     let onToggle: (String) -> Void
     let onDoubleClick: (() -> Void)?
+    let onClick: (() -> Void)?
     /// 任务行点击回调（参数为源 Markdown 行号）；nil 时任务行渲染为纯文本。
     let onToggleTask: ((Int) -> Void)?
     /// 文本实际排版高度的回写通道，见 MarkdownRenderer.measuredHeight。
@@ -151,6 +157,7 @@ struct MarkdownTextRepresentable: NSViewRepresentable {
         textView.onToggleCollapse = onToggle
         textView.onToggleTask = onToggleTask
         textView.onDoubleClick = onDoubleClick
+        textView.onClick = onClick
         return textView
     }
 
@@ -160,6 +167,7 @@ struct MarkdownTextRepresentable: NSViewRepresentable {
         textView.onToggleCollapse = onToggle
         textView.onToggleTask = onToggleTask
         textView.onDoubleClick = onDoubleClick
+        textView.onClick = onClick
         // 排版高度变化时回写 SwiftUI 的显式高度（异步：布局回调里同步改 state
         // 会触发 "Modifying state during view update"）。
         textView.onLayoutHeightChanged = { [heightBinding = $measuredHeight] height in
@@ -532,10 +540,14 @@ final class MarkdownTextView: NSTextView {
     /// 双击回调（如「双击项目简介进入编辑」）。nil 时双击走默认的整词选中。
     var onDoubleClick: (() -> Void)?
 
+    /// 鼠标按下回调。只通知宿主，不消费事件，保留文本选择及内部控件的原有点击行为。
+    var onClick: (() -> Void)?
+
     /// 任务行点击回调（参数为源 Markdown 行号）；见 mouseDown 里的连击兜底。
     var onToggleTask: ((Int) -> Void)?
 
     override func mouseDown(with event: NSEvent) {
+        onClick?()
         let point = convert(event.locationInWindow, from: nil)
         for (index, block) in codeBlockFrames().enumerated() {
             if codeBlockCopyIconRect(for: block).contains(point) {

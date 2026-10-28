@@ -98,6 +98,24 @@ final class MarkdownTaskInteractionTests: XCTestCase {
         XCTAssertEqual(toggledLines, [0, 0], "连击的每一击都要翻转一次")
     }
 
+    /// 原生文本视图消费鼠标事件时，宿主收不到外层 SwiftUI 手势；mouseDown 必须主动回报单击。
+    func testSingleMouseDownReportsClickToHost() throws {
+        let textView = makeLaidOutTextView(markdown: "普通段落")
+        var reportedClicks = 0
+        textView.onClick = { reportedClicks += 1 }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 200),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.contentView = textView
+        let inWindow = textView.convert(try center(of: "普通段落", in: textView), to: nil)
+
+        textView.mouseDown(with: try XCTUnwrap(mouseEvent(at: inWindow, in: window, clickCount: 1)))
+
+        XCTAssertEqual(reportedClicks, 1)
+    }
+
     /// 行内文字与 checkbox 都算命中；非任务行（普通段落）不命中，连击落回默认行为。
     func testTaskLineHitTestCoversTextAndMarker() throws {
         let textView = makeLaidOutTextView(markdown: "第一段\n\n- [ ] 第一项待办\n- [x] 第二项已完成\n\n结尾段落")

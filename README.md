@@ -40,7 +40,7 @@ Swift 5 language mode.
 
 | Symbol | Kind | Purpose |
 | --- | --- | --- |
-| `MarkdownRenderer` | SwiftUI `View` | Renders a Markdown string; supports collapse requests, task toggling, double-click, highlight, measured-height callbacks, and a per-instance `highlightTheme`. |
+| `MarkdownRenderer` | SwiftUI `View` | Renders a Markdown string; supports collapse requests, task toggling, single- and double-click callbacks, highlight, measured-height callbacks, and a per-instance `highlightTheme`. |
 | `MarkdownCollapseRequest` | struct | Collapse/expand-all signal for `MarkdownRenderer`. |
 | `MarkdownTextMeasurer` | enum | Windowless layout measurement: `height(markdown:width:)`, `height(markdowns:width:)`, `height(_:)`, `debugLineLayout(markdown:width:)`. |
 | `DanboMarkdownConfiguration` | enum | Global configuration: `bodyFontSize` (default 15), `linkScheme` (default `"danbo-swift-markdown"`, used for internal collapse/task links), and `highlightTheme` (default `nil` — code blocks stay monochrome). |
