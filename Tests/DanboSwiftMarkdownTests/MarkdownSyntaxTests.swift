@@ -36,6 +36,18 @@ final class MarkdownSyntaxTests: XCTestCase {
         return try XCTUnwrap(rendered.attribute(.foregroundColor, at: found.location, effectiveRange: nil) as? NSColor)
     }
 
+    /// H1–H3 的英文标题保留源码大小写，不做全大写转换。
+    func testHeadingsPreserveEnglishLetterCase() throws {
+        let rendered = render("# SwiftUI\n\n## MarkDown Parser\n\n### iOS and macOS")
+
+        for heading in ["SwiftUI", "MarkDown Parser", "iOS and macOS"] {
+            _ = try range(of: heading, in: rendered)
+        }
+        XCTAssertFalse(rendered.string.contains("SWIFTUI"))
+        XCTAssertFalse(rendered.string.contains("MARKDOWN PARSER"))
+        XCTAssertFalse(rendered.string.contains("IOS AND MACOS"))
+    }
+
     /// `**Foo**` 与 `__Foo__` 必须是两种样式：AST 不保留原始分隔符，
     /// 完全依赖回查源码位置区分，属性对不上就说明绿色强调退化成了普通加粗。
     func testBoldAndGreenEmphasisUseDifferentStyles() throws {

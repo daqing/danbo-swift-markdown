@@ -134,7 +134,7 @@ enum MarkdownAttributedBuilder {
 
         let chevron = node.hasBody ? (isCollapsed ? "▸ " : "▾ ") : ""
         let chevronWidth: CGFloat = chevron.isEmpty ? 0 : (chevron as NSString).size(withAttributes: [.font: headingFont(level)]).width
-        var line = chevron + heading.text.uppercased()
+        var line = chevron + heading.text
         if isCollapsed {
             line += "  · \(node.collapsedCount)"
         }
