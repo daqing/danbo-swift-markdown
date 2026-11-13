@@ -92,9 +92,10 @@ enum MarkdownAttributedBuilder {
     private static let linkDetector: NSDataDetector? = try? NSDataDetector(
         types: NSTextCheckingResult.CheckingType.link.rawValue
     )
-    /// 当前构建所用的源 Markdown：AST 不保留原始分隔符，自定义的绿色强调要靠源码位置
-    /// 回查区分（见 isGreenStrong）。与 availableContentWidth 一样属于构建期输入，
-    /// 由 build 在每次构建前写入；全部在主线程读写，与渲染管线同一线程约定。
+    /// 当前构建所用的源 Markdown（`-- ` 简写任务行已展开，与 AST 的源码对位一致）：
+    /// AST 不保留原始分隔符，自定义的绿色强调要靠源码位置回查区分（见 isGreenStrong）。
+    /// 与 availableContentWidth 一样属于构建期输入，由 build 在每次构建前写入；
+    /// 全部在主线程读写，与渲染管线同一线程约定。
     private static var currentSource: MarkdownSource?
 
     /// 本次构建所用的高亮配色。同为构建期输入，由 build 在每次构建前写入。
@@ -107,7 +108,11 @@ enum MarkdownAttributedBuilder {
     ///   这里是每次构建读一次，不做缓存——宿主可能中途换配色。
     static func build(markdown: String, collapsedSections: Set<String>, highlightText: String?, taskLinksEnabled: Bool = false, theme: HighlightTheme? = nil) -> NSAttributedString {
         self.taskLinksEnabled = taskLinksEnabled
-        self.currentSource = MarkdownSource(markdown)
+        // `-- ` 简写任务行在解析前展开成 `- [ ] `（幂等，解析器内部还会再展开一次）。
+        // isGreenStrong 回查源码必须用同一份展开文本：展开行的列号右移了，
+        // 拿原文对位会把展开行上的 `__绿色__` 误判成普通加粗。
+        let expanded = MarkdownDashTaskExpander.expand(markdown)
+        self.currentSource = MarkdownSource(expanded)
         self.currentTheme = theme ?? DanboMarkdownConfiguration.highlightTheme
         let root = MarkdownSectionParser.parse(markdown)
         let result = NSMutableAttributedString()

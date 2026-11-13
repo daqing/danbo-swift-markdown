@@ -12,7 +12,8 @@ Swift 5 language mode.
 ## Features
 
 - **Block layout**: headings (collapsible sections), paragraphs, ordered and
-  unordered lists, task lists (`- [ ]` / `- [x]`), quotes, fenced code blocks
+  unordered lists, task lists (`- [ ]` / `- [x]`, plus a `-- task` shorthand
+  that expands to an unchecked `- [ ] task`), quotes, fenced code blocks
   (rounded card with a copy button), dividers, images, and GFM tables (grid
   lines, header shading, per-column alignment, automatic cell wrapping).
 - **Inline rendering**: emphasis, strong, strikethrough, inline code, links,
@@ -110,7 +111,8 @@ builds must match fresh renders, images must rescale to the real container
 width, and code-block cards must not overlap adjacent paragraphs — plus the
 syntax the AST parser feeds into the renderer: `**bold**` versus `__green__`,
 `[blue]` markers (including ones spanning inline styles, and brackets that must
-stay literal inside code), the 0-based source line on task items, GFM tables
+stay literal inside code), the 0-based source line on task items, the `-- `
+task shorthand (including lines that must stay literal inside code), GFM tables
 with per-column alignment, and inline images. Code highlighting is covered too:
 known languages get their token colors, unknown and missing ones stay
 monochrome, the card fill tracks the theme, a changed scheme re-renders while an

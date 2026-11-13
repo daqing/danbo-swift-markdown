@@ -157,6 +157,70 @@ final class MarkdownSyntaxTests: XCTestCase {
         XCTAssertEqual(taskLink.host, "task", "链接之外的文字仍是任务链接")
     }
 
+    // MARK: `-- ` 简写任务行
+
+    /// `-- 内容` 渲染成未完成 checkbox，与 `- [ ] 内容` 同款：简写标记不留在正文，
+    /// 任务链接指回源 Markdown 的原行（0 基），宿主点击后按行回写勾选状态。
+    func testDashShorthandRendersAsUncheckedTask() throws {
+        let markdown = "# 标题\n\n正文\n-- 第一项\n- [x] 第二项"
+        let rendered = render(markdown)
+
+        for (marker, text, expectedLine) in [("☐", "第一项", 3), ("☑", "第二项", 4)] {
+            let found = try range(of: marker, in: rendered)
+            let link = try XCTUnwrap(
+                rendered.attribute(.link, at: found.location, effectiveRange: nil) as? URL,
+                "简写任务行「\(text)」必须带可点击的任务链接"
+            )
+            XCTAssertEqual(queryValue(named: "line", in: link), String(expectedLine),
+                           "「\(text)」应回写源 Markdown 的第 \(expectedLine) 行（0 基）")
+        }
+        XCTAssertFalse(rendered.string.contains("--"), "简写标记不应留在正文:\n\(rendered.string)")
+    }
+
+    /// 简写行跟在段落后面（懒延续行）也要能变成任务，与 `- ` 列表打断段落的行为一致。
+    func testDashShorthandInterruptsParagraph() throws {
+        let rendered = render("今天要做\n-- 修复登录\n-- 回归测试")
+
+        _ = try range(of: "今天要做", in: rendered)
+        let first = try range(of: "修复登录", in: rendered)
+        let link = try XCTUnwrap(rendered.attribute(.link, at: first.location, effectiveRange: nil) as? URL)
+        XCTAssertEqual(queryValue(named: "line", in: link), "1", "段落后的简写行是任务，指回自己的行号")
+        XCTAssertEqual(rendered.string.components(separatedBy: "☐").count - 1, 2, "两行简写各自是一个 checkbox")
+    }
+
+    /// 代码块（围栏/缩进）与行内代码里的 `-- ` 是普通字符，绝不能被展开成任务行。
+    func testDashShorthandStaysLiteralInsideCode() throws {
+        let rendered = render("```\n-- 不是任务\n```\n\n行内 `-- 也不是` 收尾\n\n    -- 缩进代码也不是")
+
+        let fenced = try range(of: "-- 不是任务", in: rendered)
+        let inline = try range(of: "-- 也不是", in: rendered)
+        let indented = try range(of: "-- 缩进代码也不是", in: rendered)
+        for (name, found) in [("围栏代码块", fenced), ("行内代码", inline), ("缩进代码块", indented)] {
+            XCTAssertNil(rendered.attribute(.link, at: found.location, effectiveRange: nil),
+                         "\(name)里的简写不能变成任务链接")
+        }
+        XCTAssertFalse(rendered.string.contains("☐"), "代码里的 -- 不应渲染成 checkbox:\n\(rendered.string)")
+    }
+
+    /// 展开行上的 `__绿色__` 仍要靠源码分隔符识别：AST 与回查源码用的是同一份
+    /// 展开后的文本；拿原文对位会因列号右移把绿色强调误判成普通加粗。
+    func testGreenEmphasisOnDashShorthandLineStaysGreen() throws {
+        let rendered = render("-- __绿色任务__")
+
+        let green = try foregroundColor(of: "绿色任务", in: rendered)
+        let greenRGB = try XCTUnwrap(green.usingColorSpace(.sRGB))
+        XCTAssertGreaterThan(greenRGB.greenComponent, greenRGB.redComponent, "展开行上的 __…__ 仍是绿色强调")
+    }
+
+    /// 光杆 `--` 是 setext 二级标题的下划线、`---` 是分隔线、`--x` 没有分隔空白：
+    /// 都不是简写任务行，渲染保持原样。
+    func testDashLookalikesAreNotTasks() throws {
+        let rendered = render("标题\n--\n\n---\n\n--x 不是任务")
+
+        XCTAssertTrue(rendered.string.contains("标题"), "setext 标题要保留")
+        XCTAssertFalse(rendered.string.contains("☐"), "形近行都不该出现 checkbox:\n\(rendered.string)")
+    }
+
     /// GFM 表格：表头与数据行都渲染出来，且分隔行只用于声明对齐、不能落进正文。
     func testTableRendersHeaderAndBodyWithoutSeparatorRow() throws {
         let rendered = render("| 项目 | 说明 |\n| --- | --- |\n| 甲 | 乙 |")

@@ -126,6 +126,14 @@ final class MarkdownTaskInteractionTests: XCTestCase {
         XCTAssertNil(textView.taskLine(at: try center(of: "结尾段落", in: textView)))
     }
 
+    /// `-- ` 简写任务行同样整行可点：命中后回写的行号与简写行的源行号一致。
+    func testDashShorthandTaskLineHitTest() throws {
+        let textView = makeLaidOutTextView(markdown: "第一段\n\n-- 简写待办")
+
+        XCTAssertEqual(textView.taskLine(at: try center(of: "简写待办", in: textView)), 2)
+        XCTAssertEqual(textView.taskLine(at: try center(of: "☐", in: textView)), 2)
+    }
+
     // MARK: - 测试用排版视图
 
     private func makeLaidOutTextView(markdown: String) -> MarkdownTextView {

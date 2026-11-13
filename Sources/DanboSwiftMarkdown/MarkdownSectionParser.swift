@@ -85,10 +85,13 @@ enum MarkdownSectionParser {
     }
 
     /// 用 swift-markdown（CommonMark + GFM）解析整篇，再把 AST 拍平成 entries。
-    /// 关掉智能标点：默认会把 `--` `...` 和直引号改写成印刷体，篡改笔记里的字面文本。
+    /// 关掉智能标点：默认会把 `--` `...` 和直引号改写成印刷体，篡改笔记里的字面文本
+    ///（`-- ` 简写任务行也依赖这一点保持字面，才能被识别出来）。
     private static func buildEntries(_ markdown: String) -> [MarkdownEntry] {
         var collector = MarkdownBlockCollector()
-        collector.collect(Document(parsing: markdown, options: [.disableSmartOpts]))
+        // `-- ` 简写任务行先展开成 GFM 标准写法（`- [ ] `）再解析。展开幂等：
+        // MarkdownAttributedBuilder 已经展开过一次，这里不会二次改写。
+        collector.collect(Document(parsing: MarkdownDashTaskExpander.expand(markdown), options: [.disableSmartOpts]))
         return collector.entries
     }
 
