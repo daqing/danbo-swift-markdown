@@ -57,6 +57,14 @@ enum MarkdownAttributedBuilder {
             : NSColor(srgbRed: 0.22, green: 0.56, blue: 0.24, alpha: 1)
     }
 
+    // 有序列表序号：橙色强调，与无序列表的圆点区分开。同样按明暗主题各取一档。
+    private static let orderedListMarkerColor = NSColor(name: nil) { appearance in
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return isDark
+            ? NSColor(srgbRed: 1.00, green: 0.70, blue: 0.35, alpha: 1)
+            : NSColor(srgbRed: 0.78, green: 0.43, blue: 0.02, alpha: 1)
+    }
+
     // 自定义语法 [Foo]：蓝色强调（含方括号）。同样按明暗主题各取一档。
     private static let bracketMarkerColor = NSColor(name: nil) { appearance in
         let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
@@ -210,7 +218,7 @@ enum MarkdownAttributedBuilder {
         case let .ordered(items):
             for (number, content) in items {
                 let style = listParagraphStyle(indent: indent, markerWidth: 22)
-                result.append(inlineLine(marker: "\(number).  ", content: content, baseFont: bodyFont, color: primaryColor, paragraphStyle: style))
+                result.append(inlineLine(marker: "\(number).  ", content: content, baseFont: bodyFont, color: primaryColor, markerColor: orderedListMarkerColor, paragraphStyle: style))
                 result.append(newline)
             }
             setTrailingParagraphSpacing(10, in: result, within: NSRange(location: start, length: result.length - start))
@@ -400,11 +408,10 @@ enum MarkdownAttributedBuilder {
 
     /// 渲染「标记 + 行内内容」组成的一行（列表圆点、序号、任务 checkbox 都走这里）：
     /// 段落样式必须覆盖整行（含标记），否则排版器按段首字符取样式会拿不到。
-    private static func inlineLine(marker: String, content: MarkdownInline, baseFont: NSFont, color: NSColor, paragraphStyle: NSParagraphStyle, htmlBreaksAsSpaces: Bool = false) -> NSAttributedString {
+    private static func inlineLine(marker: String, content: MarkdownInline, baseFont: NSFont, color: NSColor, markerColor: NSColor? = nil, paragraphStyle: NSParagraphStyle, htmlBreaksAsSpaces: Bool = false) -> NSAttributedString {
         let result = NSMutableAttributedString()
-        let style = InlineStyle(font: baseFont, color: color)
-        appendText(marker, to: result, style: style)
-        append(content, to: result, style: style, htmlBreaksAsSpaces: htmlBreaksAsSpaces)
+        appendText(marker, to: result, style: InlineStyle(font: baseFont, color: markerColor ?? color))
+        append(content, to: result, style: InlineStyle(font: baseFont, color: color), htmlBreaksAsSpaces: htmlBreaksAsSpaces)
         let full = NSRange(location: 0, length: result.length)
         result.addAttribute(.paragraphStyle, value: paragraphStyle, range: full)
         addDetectedLinks(to: result, in: full)
